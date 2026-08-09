@@ -632,6 +632,12 @@
       font-size:13px;
     }
     .check-row:last-child{border-bottom:0}
+    .scan-state{
+      margin-top:8px;
+      font-size:12px;
+      color:var(--muted);
+      min-height:16px;
+    }
     .check-decision{
       margin-top:10px;
       padding:10px;
@@ -814,8 +820,10 @@
     <div class="check-card">
       <div class="label">Номер билета или barcode</div>
       <input id="miniStaffCode" class="check-input" inputmode="numeric" autocomplete="off" placeholder="116029881 или barcode">
-      <button id="miniStaffFind" class="cta" type="button">НАЙТИ БИЛЕТ</button>
-      <div class="info-text">Вводишь номер, который показывает Qtickets Scanner, либо barcode из билета.</div>
+      <button id="miniStaffScan" class="cta" type="button">СКАНИРОВАТЬ QR</button>
+      <button id="miniStaffFind" class="ghost" type="button">НАЙТИ ВРУЧНУЮ</button>
+      <div class="info-text">Лучше сканировать QR билета. Ручной ввод ticket ID / barcode остаётся запасным вариантом.</div>
+      <div id="miniScanState" class="scan-state"></div>
     </div>
 
     <div id="miniStaffTicket" class="check-card hidden">
@@ -1121,6 +1129,84 @@
     document.getElementById("miniStaffTicket").classList.remove("hidden");
   }
 
+  function extractTicketCodeFromScan(raw) {
+    const text = String(raw || "").trim();
+    if (!text) return "";
+
+    // Самый частый случай: QR содержит только barcode / ticket id.
+    if (/^\d{6,20}$/.test(text)) return text;
+
+    // Если QR содержит URL или служебную строку Qtickets —
+    // берём наиболее подходящую длинную числовую последовательность.
+    const matches = text.match(/\d{6,20}/g) || [];
+    if (!matches.length) return "";
+
+    // Предпочитаем 12-значный barcode, затем самое длинное число.
+    const twelve = matches.find(x => x.length === 12);
+    if (twelve) return twelve;
+
+    return matches.sort((a,b) => b.length - a.length)[0];
+  }
+
+  async function miniStaffHandleScannedText(raw) {
+    const state = document.getElementById("miniScanState");
+    const code = extractTicketCodeFromScan(raw);
+
+    if (!code) {
+      state.textContent = "Код считан, но номер билета/barcode внутри не найден.";
+      if (tg?.HapticFeedback?.notificationOccurred) {
+        tg.HapticFeedback.notificationOccurred("error");
+      }
+      return false;
+    }
+
+    document.getElementById("miniStaffCode").value = code;
+    miniStaffCurrentCode = code;
+    state.textContent = `Считано: ${code}. Ищу билет...`;
+
+    try {
+      const data = await staffApi(
+        `/api/staff/tickets/${encodeURIComponent(code)}`
+      );
+      renderMiniStaffTicket(data.ticket);
+      state.textContent = `Билет найден: ${code}`;
+      if (tg?.HapticFeedback?.notificationOccurred) {
+        tg.HapticFeedback.notificationOccurred("success");
+      }
+      return true;
+    } catch(e) {
+      document.getElementById("miniStaffTicket").classList.add("hidden");
+      state.textContent = e.message || "Билет не найден";
+      if (tg?.HapticFeedback?.notificationOccurred) {
+        tg.HapticFeedback.notificationOccurred("error");
+      }
+      return false;
+    }
+  }
+
+  function openTelegramQrScanner() {
+    const state = document.getElementById("miniScanState");
+
+    if (!tg?.showScanQrPopup) {
+      state.textContent = "В этой версии Telegram встроенный QR-сканер недоступен. Используй ручной ввод.";
+      if (tg?.showAlert) {
+        tg.showAlert("Обнови Telegram или используй ручной ввод номера билета.");
+      }
+      return;
+    }
+
+    state.textContent = "Камера открыта. Наведи на QR билета.";
+
+    tg.showScanQrPopup(
+      {text: "Наведи камеру на QR-код билета PROJECT M"},
+      (text) => {
+        // true закрывает нативный сканер Telegram.
+        miniStaffHandleScannedText(text);
+        return true;
+      }
+    );
+  }
+
   async function miniStaffFindTicket() {
     miniStaffCurrentCode = document.getElementById("miniStaffCode").value.trim();
     if (!miniStaffCurrentCode) return;
@@ -1157,6 +1243,7 @@
     }
   }
 
+  document.getElementById("miniStaffScan").addEventListener("click", openTelegramQrScanner);
   document.getElementById("miniStaffFind").addEventListener("click", miniStaffFindTicket);
   document.getElementById("miniStaffCode").addEventListener("keydown", e => {
     if (e.key === "Enter") miniStaffFindTicket();

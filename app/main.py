@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from .db import get_conn
 
-app = FastAPI(title="PROJECT M backend", version="0.4.1")
+app = FastAPI(title="PROJECT M backend", version="0.4.2")
 
 QTICKETS_WEBHOOK_SECRET = os.getenv("QTICKETS_WEBHOOK_SECRET", "")
 QTICKETS_EVENT_ID = int(os.getenv("QTICKETS_EVENT_ID", "251223"))
@@ -63,13 +63,13 @@ def root():
         "service": "project-m-backend",
         "app": "/app",
         "staff": "/staff",
-        "version": "0.4.1",
+        "version": "0.4.2",
     }
 
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "project-m-backend", "version": "0.4.1"}
+    return {"ok": True, "service": "project-m-backend", "version": "0.4.2"}
 
 
 @app.get("/app")
