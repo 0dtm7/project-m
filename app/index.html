@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>ПРОЕКТ «М»</title>
+  <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
+  <script src="https://cdn.qtickets.tech/openapi.js"></script>
+  <style>
+    :root {
+      --bg:#f1efe8;
+      --ink:#111;
+      --muted:#77746d;
+      --line:#cfcac0;
+      --acid:#cfd9c3;
+      --card:#f8f6ef;
+    }
+    * { box-sizing:border-box; }
+    body {
+      margin:0;
+      background:var(--bg);
+      color:var(--ink);
+      font-family:Arial,Helvetica,sans-serif;
+    }
+    .app { max-width:720px; margin:0 auto; padding:18px 16px 36px; }
+    .top { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+    .eyebrow,.hand { font-family:"Comic Sans MS","Segoe Print",cursive; }
+    h1 { margin:2px 0 0; font-size:34px; letter-spacing:-2px; }
+    .badge { border:2px solid var(--ink); border-radius:999px; padding:7px 10px; font-weight:800; }
+    .hero {
+      margin-top:18px; border:2px solid var(--ink); border-radius:22px;
+      padding:18px; position:relative; overflow:hidden; background:var(--card);
+    }
+    .num {
+      font-family:Impact,"Arial Black",sans-serif; font-size:150px; line-height:.78;
+      letter-spacing:-12px; color:var(--acid); -webkit-text-stroke:3px var(--ink);
+    }
+    .meta { display:flex; gap:10px; flex-wrap:wrap; margin-top:18px; }
+    .chip { padding:8px 10px; border:1px solid var(--line); border-radius:999px; font-size:14px; }
+    .cta {
+      width:100%; margin-top:14px; border:0; border-radius:14px; padding:14px;
+      background:var(--ink); color:var(--bg); font-weight:800; font-size:16px;
+    }
+    .ghost {
+      width:100%; margin-top:10px; border:1px solid var(--line); border-radius:14px;
+      padding:12px; background:transparent; color:inherit; font-size:15px;
+    }
+    .section { margin-top:22px; }
+    .section h2 { margin:0 0 10px; font-size:22px; letter-spacing:-1px; }
+    .ticket {
+      background:var(--card); border:2px solid var(--ink); border-radius:18px;
+      padding:16px; margin:10px 0;
+    }
+    .ticket-head { display:flex; justify-content:space-between; gap:10px; }
+    .ticket-name { font-size:24px; font-weight:900; }
+    .status { font-size:12px; border:1px solid var(--line); border-radius:999px; padding:6px 8px; height:max-content; }
+    .barcode {
+      margin-top:14px; font-family:monospace; font-size:20px; letter-spacing:2px;
+      border-top:1px dashed var(--line); padding-top:12px; overflow-wrap:anywhere;
+    }
+    .small { color:var(--muted); font-size:13px; }
+    .profile { margin-top:12px; display:flex; align-items:center; gap:10px; }
+    .avatar { width:38px; height:38px; border-radius:50%; object-fit:cover; border:1px solid var(--line); }
+    .avatar-fallback { width:38px; height:38px; border-radius:50%; display:grid; place-items:center; background:var(--acid); font-weight:900; }
+    .hidden { display:none !important; }
+    #secret { margin-top:28px; text-align:center; color:var(--muted); font-size:12px; user-select:none; }
+    .error { padding:12px; border:1px solid #9c4f4f; border-radius:12px; margin-top:12px; }
+    @media (prefers-color-scheme:dark) {
+      :root { --bg:#111; --ink:#f0eee8; --muted:#aaa69d; --line:#3b3935; --acid:#43513f; --card:#191919; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <div class="top">
+      <div>
+        <div class="eyebrow">СУРГУТ // 05.09.2026</div>
+        <h1>ПРОЕКТ «М»</h1>
+      </div>
+      <div class="badge">18</div>
+    </div>
+
+    <div id="profile" class="profile hidden"></div>
+
+    <section class="hero">
+      <div id="secretTap" class="num">18</div>
+      <div class="hand">МИКРОБ СТАНОВИТСЯ СОВЕРШЕННОЛЕТНИМ</div>
+      <div class="meta">
+        <div class="chip">05 СЕНТЯБРЯ</div>
+        <div class="chip">18:00</div>
+        <div class="chip">КОМПРОМАТ</div>
+        <div class="chip">ЛЕНИНГРАДСКАЯ 3/11</div>
+      </div>
+      <button id="buyBtn" class="cta" type="button">КУПИТЬ БИЛЕТ</button>
+      <button id="refreshBtn" class="ghost" type="button">ОБНОВИТЬ МОИ БИЛЕТЫ</button>
+      <a id="qticketsDynamic" class="qtickets-button hidden" href="https://qtickets.ru/event/251223">Купить билет</a>
+      <div id="authError" class="error hidden"></div>
+    </section>
+
+    <section class="section">
+      <h2>МОИ БИЛЕТЫ</h2>
+      <div id="tickets">
+        <div class="small">Открываем Telegram-профиль...</div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>ВАЖНО</h2>
+      <div class="small">До 22:00 — 16+. После 22:00 — 18+. Возраст проверяем на входе по документу.</div>
+    </section>
+
+    <div id="secret">project m / system online</div>
+    <div id="uga" class="hand hidden" style="text-align:center;margin-top:8px">уга буга. нашёл пасхалку.</div>
+  </main>
+
+<script>
+(() => {
+  const tg = window.Telegram?.WebApp;
+  const initData = tg?.initData || "";
+  const ticketsBox = document.getElementById("tickets");
+  const profile = document.getElementById("profile");
+  const authError = document.getElementById("authError");
+  const buyBtn = document.getElementById("buyBtn");
+  const refreshBtn = document.getElementById("refreshBtn");
+  const qticketsDynamic = document.getElementById("qticketsDynamic");
+
+  if (tg) {
+    tg.ready();
+    tg.expand();
+  }
+
+  function showError(text) {
+    authError.textContent = text;
+    authError.classList.remove("hidden");
+  }
+
+  function money(value) {
+    if (value === null || value === undefined) return "";
+    return `${Number(value).toFixed(0)} ₽`;
+  }
+
+  function showProfile(user) {
+    profile.innerHTML = "";
+    const avatar = user.photo_url
+      ? `<img class="avatar" src="${user.photo_url}" alt="">`
+      : `<div class="avatar-fallback">${(user.first_name || "M").slice(0,1).toUpperCase()}</div>`;
+    profile.innerHTML = `${avatar}<div><strong>${user.first_name || "Гость"}</strong><div class="small">${user.username ? "@" + user.username : "Telegram user"}</div></div>`;
+    profile.classList.remove("hidden");
+  }
+
+  function renderTickets(items) {
+    if (!items.length) {
+      ticketsBox.innerHTML = `<div class="small">Пока пусто. После оплаты QTickets билет появится здесь автоматически.</div>`;
+      return;
+    }
+
+    ticketsBox.innerHTML = items.map(t => `
+      <article class="ticket">
+        <div class="ticket-head">
+          <div>
+            <div class="small">PROJECT M // QTICKETS</div>
+            <div class="ticket-name">${t.ticket_name || "БИЛЕТ"}</div>
+            <div class="small">${money(t.original_price)}</div>
+          </div>
+          <div class="status">${t.status === "used" ? "ИСПОЛЬЗОВАН" : t.status === "refunded" ? "ВОЗВРАЩЁН" : "АКТИВЕН"}</div>
+        </div>
+        <div class="barcode">${t.barcode}</div>
+        <div class="small" style="margin-top:8px">${t.age_verified ? "18+ подтверждён на входе" : "Возраст ещё не проверен"}</div>
+        ${t.pdf_url ? `<button class="ghost pdf-btn" data-url="${t.pdf_url}" type="button">ОТКРЫТЬ PDF БИЛЕТ</button>` : ""}
+      </article>
+    `).join("");
+
+    document.querySelectorAll(".pdf-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const url = btn.dataset.url;
+        if (tg?.openLink) tg.openLink(url);
+        else window.open(url, "_blank");
+      });
+    });
+  }
+
+  async function auth() {
+    if (!initData) {
+      ticketsBox.innerHTML = `<div class="small">Открой приложение через Telegram-бота, чтобы увидеть свои билеты.</div>`;
+      buyBtn.disabled = true;
+      showError("Сейчас страница открыта не из Telegram.");
+      return false;
+    }
+
+    const res = await fetch("/api/telegram/auth", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({init_data:initData})
+    });
+
+    if (!res.ok) {
+      showError("Не получилось подтвердить Telegram-профиль.");
+      return false;
+    }
+
+    const data = await res.json();
+    showProfile(data.user);
+    return true;
+  }
+
+  async function loadTickets() {
+    if (!initData) return;
+    ticketsBox.innerHTML = `<div class="small">Проверяем билеты...</div>`;
+
+    const res = await fetch("/api/me/tickets", {
+      headers: {"X-Telegram-Init-Data": initData}
+    });
+
+    if (!res.ok) {
+      ticketsBox.innerHTML = `<div class="small">Не получилось загрузить билеты.</div>`;
+      return;
+    }
+
+    const data = await res.json();
+    renderTickets(data.tickets || []);
+  }
+
+  buyBtn.addEventListener("click", async () => {
+    if (!initData) return;
+
+    buyBtn.disabled = true;
+    buyBtn.textContent = "ОТКРЫВАЕМ QTICKETS...";
+
+    try {
+      const res = await fetch("/api/purchase-session", {
+        method: "POST",
+        headers: {"X-Telegram-Init-Data": initData}
+      });
+      if (!res.ok) throw new Error("session");
+
+      const data = await res.json();
+      qticketsDynamic.href = data.qtickets_url;
+      qticketsDynamic.setAttribute("data-custom", JSON.stringify(data.custom));
+
+      if (window.qTickets?.init) {
+        window.qTickets.init();
+        qticketsDynamic.click();
+      } else {
+        showError("QTickets не успел загрузиться. Нажми ещё раз.");
+      }
+    } catch {
+      showError("Не получилось начать покупку.");
+    } finally {
+      buyBtn.disabled = false;
+      buyBtn.textContent = "КУПИТЬ БИЛЕТ";
+    }
+  });
+
+  refreshBtn.addEventListener("click", loadTickets);
+
+  let taps = 0;
+  document.getElementById("secretTap").addEventListener("click", () => {
+    taps++;
+    if (taps >= 5) document.getElementById("uga").classList.remove("hidden");
+  });
+
+  (async () => {
+    const ok = await auth();
+    if (ok) {
+      await loadTickets();
+      setInterval(loadTickets, 8000);
+    }
+  })();
+})();
+</script>
+</body>
+</html>
