@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+  <meta name="theme-color" content="#11120f">
+  <title>PROJECT M // CHECK</title>
+  <style>
+    :root{--bg:#11120f;--card:#1b1c18;--ink:#f4f1e8;--muted:#99978f;--line:#3a3b35;--green:#8fd39a;--red:#e07b72;--acid:#d9e1cf}
+    *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+    html,body{margin:0;min-height:100%;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif}
+    .app{max-width:620px;margin:0 auto;padding:calc(18px + env(safe-area-inset-top)) 14px calc(28px + env(safe-area-inset-bottom))}
+    .top{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+    h1{margin:0;font-size:30px;letter-spacing:-1.8px}
+    .tag{border:1px solid var(--line);border-radius:999px;padding:7px 9px;font-size:11px;font-weight:900}
+    .card{margin-top:16px;border:1px solid var(--line);border-radius:18px;padding:15px;background:var(--card)}
+    .label{font-size:11px;color:var(--muted);font-weight:800;text-transform:uppercase;letter-spacing:.1em}
+    input{width:100%;margin-top:8px;border:1px solid var(--line);border-radius:13px;background:#12130f;color:var(--ink);padding:14px;font-size:17px;outline:none}
+    button{width:100%;border:0;border-radius:13px;padding:13px 12px;margin-top:9px;font-weight:900;font-size:15px}
+    .primary{background:var(--acid);color:#111}
+    .ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+    .green{background:var(--green);color:#102014}
+    .red{background:var(--red);color:#2b0d0b}
+    .actions{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+    .ticket-name{font-size:28px;font-weight:950;margin-top:5px}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:21px;letter-spacing:.07em;overflow-wrap:anywhere}
+    .row{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid var(--line)}
+    .row:last-child{border-bottom:0}
+    .status{margin-top:12px;border-radius:12px;padding:11px;font-weight:900}
+    .ok{background:rgba(143,211,154,.14);color:var(--green);border:1px solid rgba(143,211,154,.35)}
+    .stop{background:rgba(224,123,114,.12);color:var(--red);border:1px solid rgba(224,123,114,.35)}
+    .neutral{background:#151612;color:var(--muted);border:1px solid var(--line)}
+    .hidden{display:none!important}
+    .small{font-size:12px;color:var(--muted);line-height:1.35}
+    .test{margin-top:10px;font-size:11px;color:#d6bf7a}
+  </style>
+</head>
+<body>
+<main class="app">
+  <div class="top">
+    <div>
+      <div class="label">PROJECT M // STAFF</div>
+      <h1>ПРОВЕРКА ВОЗРАСТА</h1>
+    </div>
+    <div class="tag">05.09</div>
+  </div>
+
+  <section id="loginCard" class="card">
+    <div class="label">PIN сотрудника</div>
+    <input id="pin" type="password" inputmode="numeric" autocomplete="off" placeholder="••••••">
+    <button id="loginBtn" class="primary">ВОЙТИ</button>
+    <div id="loginError" class="small" style="margin-top:8px"></div>
+  </section>
+
+  <section id="checker" class="hidden">
+    <div class="card">
+      <div class="label">Номер билета или barcode</div>
+      <input id="code" inputmode="numeric" autocomplete="off" placeholder="116029881 или 12 цифр">
+      <button id="findBtn" class="primary">НАЙТИ БИЛЕТ</button>
+      <div class="small" style="margin-top:8px">Можно вводить номер билета с экрана Qtickets Scanner или barcode из Mini App.</div>
+    </div>
+
+    <section id="ticketCard" class="card hidden">
+      <div class="label">Билет</div>
+      <div id="ticketName" class="ticket-name">—</div>
+
+      <div class="row"><span class="label">ID</span><strong id="ticketId">—</strong></div>
+      <div class="row"><span class="label">Barcode</span><span id="barcode" class="mono">—</span></div>
+      <div class="row"><span class="label">Статус</span><strong id="ticketStatus">—</strong></div>
+      <div class="row"><span class="label">Возраст</span><strong id="ageStatus">НЕ ПРОВЕРЕН</strong></div>
+
+      <div id="decision" class="status neutral">Проверь документ гостя.</div>
+
+      <div class="actions">
+        <button id="age16Btn" class="ghost">16–17 ЛЕТ</button>
+        <button id="age18Btn" class="green">18+</button>
+      </div>
+      <button id="resetBtn" class="red">СБРОСИТЬ ПРОВЕРКУ</button>
+
+      <div class="test">После нажатия статус сразу обновится в Mini App гостя.</div>
+    </section>
+
+    <button id="logoutBtn" class="ghost">ВЫЙТИ ИЗ РЕЖИМА СОТРУДНИКА</button>
+  </section>
+</main>
+
+<script>
+(() => {
+  const loginCard = document.getElementById("loginCard");
+  const checker = document.getElementById("checker");
+  const ticketCard = document.getElementById("ticketCard");
+  let currentCode = "";
+
+  async function api(url, options={}) {
+    const res = await fetch(url, {
+      ...options,
+      headers: {"Content-Type":"application/json", ...(options.headers||{})}
+    });
+    let data = {};
+    try { data = await res.json(); } catch {}
+    if (!res.ok) throw new Error(data.detail || "Ошибка");
+    return data;
+  }
+
+  async function checkSession() {
+    try {
+      await api("/api/staff/session");
+      loginCard.classList.add("hidden");
+      checker.classList.remove("hidden");
+    } catch {}
+  }
+
+  document.getElementById("loginBtn").onclick = async () => {
+    const pin = document.getElementById("pin").value.trim();
+    const err = document.getElementById("loginError");
+    err.textContent = "";
+    try {
+      await api("/api/staff/login", {
+        method:"POST",
+        body:JSON.stringify({pin})
+      });
+      loginCard.classList.add("hidden");
+      checker.classList.remove("hidden");
+    } catch(e) {
+      err.textContent = e.message || "Неверный PIN";
+    }
+  };
+
+  function renderTicket(t) {
+    document.getElementById("ticketName").textContent = t.ticket_name || "БИЛЕТ";
+    document.getElementById("ticketId").textContent = t.id;
+    document.getElementById("barcode").textContent = t.barcode || "—";
+    document.getElementById("ticketStatus").textContent = (t.status || "—").toUpperCase();
+    document.getElementById("ageStatus").textContent =
+      t.age_group === "18+" ? "18+ ПОДТВЕРЖДЁН" :
+      t.age_group === "16-17" ? "16–17 ПОДТВЕРЖДЕНО" :
+      "НЕ ПРОВЕРЕН";
+
+    const box = document.getElementById("decision");
+    box.className = "status";
+    if (t.access_now === true) {
+      box.classList.add("ok");
+      box.textContent = t.access_reason || "ДОПУСК РАЗРЕШЁН";
+    } else if (t.access_now === false) {
+      box.classList.add("stop");
+      box.textContent = t.access_reason || "НЕ ДОПУСКАТЬ";
+    } else {
+      box.classList.add("neutral");
+      box.textContent = t.access_reason || "Проверь документ гостя.";
+    }
+    ticketCard.classList.remove("hidden");
+  }
+
+  async function findTicket() {
+    currentCode = document.getElementById("code").value.trim();
+    if (!currentCode) return;
+    try {
+      const data = await api(`/api/staff/tickets/${encodeURIComponent(currentCode)}`);
+      renderTicket(data.ticket);
+    } catch(e) {
+      ticketCard.classList.add("hidden");
+      alert(e.message || "Билет не найден");
+    }
+  }
+
+  document.getElementById("findBtn").onclick = findTicket;
+  document.getElementById("code").addEventListener("keydown", e => {
+    if (e.key === "Enter") findTicket();
+  });
+
+  async function setAge(age_group) {
+    if (!currentCode) return;
+    try {
+      const data = await api(`/api/staff/tickets/${encodeURIComponent(currentCode)}/age`, {
+        method:"POST",
+        body:JSON.stringify({age_group})
+      });
+      renderTicket(data.ticket);
+      if (navigator.vibrate) navigator.vibrate(80);
+    } catch(e) {
+      alert(e.message || "Не удалось сохранить");
+    }
+  }
+
+  document.getElementById("age16Btn").onclick = () => setAge("16-17");
+  document.getElementById("age18Btn").onclick = () => setAge("18+");
+  document.getElementById("resetBtn").onclick = async () => {
+    if (!currentCode) return;
+    try {
+      const data = await api(`/api/staff/tickets/${encodeURIComponent(currentCode)}/age`, {
+        method:"DELETE"
+      });
+      renderTicket(data.ticket);
+    } catch(e) {
+      alert(e.message || "Не удалось сбросить");
+    }
+  };
+
+  document.getElementById("logoutBtn").onclick = async () => {
+    try { await api("/api/staff/logout", {method:"POST"}); } catch {}
+    location.reload();
+  };
+
+  checkSession();
+})();
+</script>
+</body>
+</html>

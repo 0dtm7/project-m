@@ -10,17 +10,18 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import Cookie, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from .db import get_conn
 
-app = FastAPI(title="PROJECT M backend", version="0.3.2")
+app = FastAPI(title="PROJECT M backend", version="0.4.0")
 
 QTICKETS_WEBHOOK_SECRET = os.getenv("QTICKETS_WEBHOOK_SECRET", "")
 QTICKETS_EVENT_ID = int(os.getenv("QTICKETS_EVENT_ID", "251223"))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+STAFF_CHECK_PIN = os.getenv("STAFF_CHECK_PIN", "")
 
 PUBLIC_BASE_URL = os.getenv(
     "PUBLIC_BASE_URL",
@@ -32,10 +33,23 @@ TELEGRAM_WEBHOOK_URL = f"{PUBLIC_BASE_URL}/api/telegram/webhook"
 QTICKETS_EVENT_URL = f"https://qtickets.ru/event/{QTICKETS_EVENT_ID}"
 
 APP_HTML = Path(__file__).with_name("index.html")
+STAFF_HTML = Path(__file__).with_name("staff.html")
+
+SURGUT_TZ = timezone(timedelta(hours=5))
+EVENT_DATE = datetime(2026, 9, 5, 18, 0, tzinfo=SURGUT_TZ)
+ADULT_ONLY_TIME = datetime(2026, 9, 5, 22, 0, tzinfo=SURGUT_TZ)
 
 
 class TelegramAuthBody(BaseModel):
     init_data: str
+
+
+class StaffLoginBody(BaseModel):
+    pin: str
+
+
+class AgeBody(BaseModel):
+    age_group: str
 
 
 @app.get("/")
@@ -44,18 +58,24 @@ def root():
         "ok": True,
         "service": "project-m-backend",
         "app": "/app",
-        "version": "0.3.2",
+        "staff": "/staff",
+        "version": "0.4.0",
     }
 
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "project-m-backend", "version": "0.3.2"}
+    return {"ok": True, "service": "project-m-backend", "version": "0.4.0"}
 
 
 @app.get("/app")
 def mini_app():
     return FileResponse(APP_HTML)
+
+
+@app.get("/staff")
+def staff_app():
+    return FileResponse(STAFF_HTML)
 
 
 # ---------------------------
@@ -127,10 +147,7 @@ def configure_telegram_bot():
                 "allowed_updates": ["message"],
             },
         )
-
-        # Убираем список команд — бот используется как вход в Mini App.
         telegram_api("deleteMyCommands", {})
-
         print("Telegram webhook configured")
     except Exception as exc:
         print(f"Telegram setup failed: {type(exc).__name__}")
@@ -148,7 +165,6 @@ async def telegram_bot_webhook(request: Request):
     text = (message.get("text") or "").strip()
     chat_id = int(chat["id"])
 
-    # /start — красивое приветствие.
     if text.startswith("/start"):
         try:
             send_project_m_start(chat_id)
@@ -156,8 +172,6 @@ async def telegram_bot_webhook(request: Request):
             pass
         return {"ok": True}
 
-    # Если человек всё же пишет в поле ввода —
-    # мягко возвращаем его в приложение.
     if text:
         try:
             telegram_api(
@@ -172,6 +186,240 @@ async def telegram_bot_webhook(request: Request):
             pass
 
     return {"ok": True}
+
+
+# ---------------------------
+# Staff auth
+# ---------------------------
+
+def staff_secret() -> bytes:
+    material = f"{TELEGRAM_BOT_TOKEN}|{STAFF_CHECK_PIN}|project-m-staff"
+    return hashlib.sha256(material.encode("utf-8")).digest()
+
+
+def make_staff_session() -> str:
+    expires = int(time.time()) + 12 * 60 * 60
+    payload = str(expires)
+    signature = hmac.new(
+        staff_secret(),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{payload}.{signature}"
+
+
+def verify_staff_session(value: str | None) -> None:
+    if not STAFF_CHECK_PIN:
+        raise HTTPException(503, "STAFF_CHECK_PIN is not configured")
+    if not value or "." not in value:
+        raise HTTPException(401, "Staff login required")
+
+    expires_raw, signature = value.split(".", 1)
+
+    try:
+        expires = int(expires_raw)
+    except ValueError:
+        raise HTTPException(401, "Invalid staff session")
+
+    if expires < int(time.time()):
+        raise HTTPException(401, "Staff session expired")
+
+    expected = hmac.new(
+        staff_secret(),
+        expires_raw.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    if not hmac.compare_digest(expected, signature):
+        raise HTTPException(401, "Invalid staff session")
+
+
+@app.post("/api/staff/login")
+def staff_login(body: StaffLoginBody, response: Response):
+    if not STAFF_CHECK_PIN:
+        raise HTTPException(503, "STAFF_CHECK_PIN is not configured")
+
+    if not secrets.compare_digest(body.pin.strip(), STAFF_CHECK_PIN):
+        raise HTTPException(401, "Неверный PIN")
+
+    response.set_cookie(
+        key="pm_staff",
+        value=make_staff_session(),
+        max_age=12 * 60 * 60,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+    return {"ok": True}
+
+
+@app.post("/api/staff/logout")
+def staff_logout(response: Response):
+    response.delete_cookie("pm_staff", path="/")
+    return {"ok": True}
+
+
+@app.get("/api/staff/session")
+def staff_session(pm_staff: str | None = Cookie(default=None)):
+    verify_staff_session(pm_staff)
+    return {"ok": True}
+
+
+def access_decision(age_group: str | None):
+    now = datetime.now(SURGUT_TZ)
+
+    if not age_group:
+        return None, "Проверь документ гостя."
+
+    if age_group == "18+":
+        return True, "18+ подтверждён. Допуск разрешён."
+
+    if age_group == "16-17":
+        if now.date() < EVENT_DATE.date():
+            return None, "16–17 подтверждено. Сейчас тестовый режим до мероприятия."
+        if now < ADULT_ONLY_TIME:
+            return True, "16–17 подтверждено. До 22:00 допуск разрешён."
+        return False, "16–17. После 22:00 НЕ ДОПУСКАТЬ."
+
+    return None, "Неизвестный возрастной статус."
+
+
+def fetch_ticket_by_code(cur, code: str):
+    cur.execute(
+        """
+        SELECT
+            t.id,
+            t.order_id,
+            t.barcode,
+            t.ticket_name,
+            t.status,
+            t.checked_at,
+            t.age_verified,
+            t.age_verified_at,
+            t.age_group,
+            o.event_id,
+            o.status AS order_status
+        FROM qt_tickets t
+        JOIN qt_orders o ON o.id = t.order_id
+        WHERE t.barcode = %s
+           OR t.id::text = %s
+        LIMIT 1
+        """,
+        (code, code),
+    )
+    return cur.fetchone()
+
+
+def decorate_staff_ticket(ticket: dict[str, Any]):
+    allowed, reason = access_decision(ticket.get("age_group"))
+    result = dict(ticket)
+    result["access_now"] = allowed
+    result["access_reason"] = reason
+    return result
+
+
+@app.get("/api/staff/tickets/{code}")
+def staff_get_ticket(
+    code: str,
+    pm_staff: str | None = Cookie(default=None),
+):
+    verify_staff_session(pm_staff)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            ticket = fetch_ticket_by_code(cur, code.strip())
+
+    if not ticket:
+        raise HTTPException(404, "Билет не найден")
+
+    return {"ok": True, "ticket": decorate_staff_ticket(ticket)}
+
+
+@app.post("/api/staff/tickets/{code}/age")
+def staff_set_age(
+    code: str,
+    body: AgeBody,
+    pm_staff: str | None = Cookie(default=None),
+):
+    verify_staff_session(pm_staff)
+
+    if body.age_group not in ("16-17", "18+"):
+        raise HTTPException(400, "Недопустимый возрастной статус")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            ticket = fetch_ticket_by_code(cur, code.strip())
+            if not ticket:
+                raise HTTPException(404, "Билет не найден")
+
+            cur.execute(
+                """
+                UPDATE qt_tickets
+                SET
+                    age_group=%s,
+                    age_verified=TRUE,
+                    age_verified_at=NOW(),
+                    age_verified_by='staff',
+                    updated_at=NOW()
+                WHERE id=%s
+                """,
+                (body.age_group, ticket["id"]),
+            )
+
+            cur.execute(
+                """
+                INSERT INTO age_check_events(ticket_id, age_group, action, checked_by)
+                VALUES (%s, %s, 'verify', 'staff')
+                """,
+                (ticket["id"], body.age_group),
+            )
+
+            conn.commit()
+            ticket = fetch_ticket_by_code(cur, str(ticket["id"]))
+
+    return {"ok": True, "ticket": decorate_staff_ticket(ticket)}
+
+
+@app.delete("/api/staff/tickets/{code}/age")
+def staff_reset_age(
+    code: str,
+    pm_staff: str | None = Cookie(default=None),
+):
+    verify_staff_session(pm_staff)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            ticket = fetch_ticket_by_code(cur, code.strip())
+            if not ticket:
+                raise HTTPException(404, "Билет не найден")
+
+            cur.execute(
+                """
+                UPDATE qt_tickets
+                SET
+                    age_group=NULL,
+                    age_verified=FALSE,
+                    age_verified_at=NULL,
+                    age_verified_by=NULL,
+                    updated_at=NOW()
+                WHERE id=%s
+                """,
+                (ticket["id"],),
+            )
+
+            cur.execute(
+                """
+                INSERT INTO age_check_events(ticket_id, age_group, action, checked_by)
+                VALUES (%s, NULL, 'reset', 'staff')
+                """,
+                (ticket["id"],),
+            )
+
+            conn.commit()
+            ticket = fetch_ticket_by_code(cur, str(ticket["id"]))
+
+    return {"ok": True, "ticket": decorate_staff_ticket(ticket)}
 
 
 # ---------------------------
@@ -546,6 +794,7 @@ def my_tickets(
                     t.checked_at,
                     t.age_verified,
                     t.age_verified_at,
+                    t.age_group,
                     t.pdf_url,
                     t.passbook_url,
                     o.id AS order_id,
@@ -660,7 +909,8 @@ def ticket_by_barcode(barcode: str):
                 SELECT id, order_id, barcode, show_id,
                        ticket_name, seat_id, price, original_price,
                        pdf_url, passbook_url,
-                       status, checked_at, age_verified, age_verified_at
+                       status, checked_at, age_verified, age_verified_at,
+                       age_group
                 FROM qt_tickets
                 WHERE barcode=%s
                 """,
@@ -672,25 +922,3 @@ def ticket_by_barcode(barcode: str):
         raise HTTPException(404, "Ticket not found")
 
     return ticket
-
-
-@app.post("/api/tickets/{barcode}/verify-age")
-def verify_age(barcode: str):
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE qt_tickets
-                SET age_verified=TRUE, age_verified_at=NOW(), updated_at=NOW()
-                WHERE barcode=%s
-                RETURNING id, barcode, age_verified, age_verified_at
-                """,
-                (barcode,),
-            )
-            ticket = cur.fetchone()
-            conn.commit()
-
-    if not ticket:
-        raise HTTPException(404, "Ticket not found")
-
-    return {"ok": True, "ticket": ticket}
