@@ -571,6 +571,76 @@
       color:var(--paper);
     }
 
+
+    .staff-only{display:none}
+    body.staff-mode .staff-only{display:block}
+    body.staff-mode .bottom-nav{grid-template-columns:repeat(5,1fr)}
+    .check-card{
+      background:var(--card);
+      border:2px solid var(--ink);
+      border-radius:18px 13px 20px 14px;
+      padding:14px;
+      margin-bottom:10px;
+    }
+    .check-input{
+      width:100%;
+      margin-top:8px;
+      padding:13px 12px;
+      border:1.5px solid var(--ink);
+      border-radius:13px 10px 14px 11px;
+      background:var(--paper);
+      color:var(--ink);
+      font-size:17px;
+      outline:none;
+    }
+    .check-actions{
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:8px;
+      margin-top:10px;
+    }
+    .check-btn{
+      border:1.5px solid var(--ink);
+      border-radius:13px;
+      padding:12px 8px;
+      font-weight:950;
+      background:transparent;
+      color:var(--ink);
+    }
+    .check-btn.ok{
+      background:#91d49b;
+      color:#102014;
+    }
+    .check-btn.reset{
+      width:100%;
+      margin-top:8px;
+      background:#e47d74;
+      color:#2d0d0a;
+    }
+    .check-result{
+      margin-top:12px;
+      border:1px solid var(--line);
+      border-radius:13px;
+      padding:12px;
+    }
+    .check-row{
+      display:flex;
+      justify-content:space-between;
+      gap:10px;
+      padding:7px 0;
+      border-bottom:1px solid var(--line);
+      font-size:13px;
+    }
+    .check-row:last-child{border-bottom:0}
+    .check-decision{
+      margin-top:10px;
+      padding:10px;
+      border-radius:11px;
+      font-size:13px;
+      font-weight:900;
+      background:var(--acid);
+    }
+
     .hidden{display:none!important}
 
     @media(min-width:600px){
@@ -641,6 +711,7 @@
     <button class="tab" data-tab="tickets">Мой билет</button>
     <button class="tab" data-tab="lineup">Line-up</button>
     <button class="tab" data-tab="info">Инфо</button>
+    <button id="staffTopTab" class="tab staff-only" data-tab="check">Check</button>
   </div>
 
   <section id="panel-home" class="panel active">
@@ -736,6 +807,38 @@
     </div>
   </section>
 
+
+  <section id="panel-check" class="panel staff-only">
+    <div class="marker section-title">CHECK // STAFF</div>
+
+    <div class="check-card">
+      <div class="label">Номер билета или barcode</div>
+      <input id="miniStaffCode" class="check-input" inputmode="numeric" autocomplete="off" placeholder="116029881 или barcode">
+      <button id="miniStaffFind" class="cta" type="button">НАЙТИ БИЛЕТ</button>
+      <div class="info-text">Вводишь номер, который показывает Qtickets Scanner, либо barcode из билета.</div>
+    </div>
+
+    <div id="miniStaffTicket" class="check-card hidden">
+      <div class="label">Найден билет</div>
+      <div id="miniStaffName" class="info-big">—</div>
+
+      <div class="check-result">
+        <div class="check-row"><span>ID</span><strong id="miniStaffId">—</strong></div>
+        <div class="check-row"><span>BARCODE</span><strong id="miniStaffBarcode">—</strong></div>
+        <div class="check-row"><span>СТАТУС</span><strong id="miniStaffStatus">—</strong></div>
+        <div class="check-row"><span>ВОЗРАСТ</span><strong id="miniStaffAge">НЕ ПРОВЕРЕН</strong></div>
+      </div>
+
+      <div id="miniStaffDecision" class="check-decision">Проверь документ гостя.</div>
+
+      <div class="check-actions">
+        <button id="miniAge16" class="check-btn" type="button">16–17 ЛЕТ</button>
+        <button id="miniAge18" class="check-btn ok" type="button">18+</button>
+      </div>
+      <button id="miniAgeReset" class="check-btn reset" type="button">СБРОСИТЬ ПРОВЕРКУ</button>
+    </div>
+  </section>
+
   <div class="secret">PROJECT M / SYSTEM ONLINE</div>
   <div id="uga" class="uga hidden">УГА БУГА. СЕКРЕТ НАЙДЕН.</div>
 </main>
@@ -745,6 +848,7 @@
   <button class="nav-btn" data-tab="tickets">Билет</button>
   <button class="nav-btn" data-tab="lineup">Line-up</button>
   <button class="nav-btn" data-tab="info">Инфо</button>
+  <button id="staffBottomTab" class="nav-btn staff-only" data-tab="check">Check</button>
 </nav>
 
 <script>
@@ -864,7 +968,7 @@
             <div class="label">BARCODE</div>
             <div class="barcode">${t.barcode}</div>
             <div class="ticket-extra">
-              <span>${t.age_verified ? "18+ ПОДТВЕРЖДЁН" : "ВОЗРАСТ НЕ ПРОВЕРЕН"}</span>
+              <span>${t.age_group === "18+" ? "18+ ПОДТВЕРЖДЁН" : t.age_group === "16-17" ? "16–17 ПОДТВЕРЖДЕНО" : "ВОЗРАСТ НЕ ПРОВЕРЕН"}</span>
               <span>05.09 // 18:00</span>
             </div>
             ${t.pdf_url ? `<button class="ghost pdf-btn" data-url="${t.pdf_url}" type="button">ОТКРЫТЬ PDF БИЛЕТ</button>` : ""}
@@ -973,9 +1077,111 @@
     }
   });
 
+
+  let miniStaffCurrentCode = "";
+
+  async function staffApi(url, options={}) {
+    const headers = {
+      "X-Telegram-Init-Data": initData,
+      ...(options.headers || {})
+    };
+    if (options.body) headers["Content-Type"] = "application/json";
+
+    const res = await fetch(url, {...options, headers});
+    let data = {};
+    try { data = await res.json(); } catch {}
+    if (!res.ok) throw new Error(data.detail || "Ошибка");
+    return data;
+  }
+
+  async function enableStaffModeIfAllowed() {
+    if (!initData) return false;
+    try {
+      await staffApi("/api/staff/telegram/session");
+      document.body.classList.add("staff-mode");
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function renderMiniStaffTicket(t) {
+    document.getElementById("miniStaffName").textContent = t.ticket_name || "БИЛЕТ";
+    document.getElementById("miniStaffId").textContent = t.id || "—";
+    document.getElementById("miniStaffBarcode").textContent = t.barcode || "—";
+    document.getElementById("miniStaffStatus").textContent = (t.status || "—").toUpperCase();
+    document.getElementById("miniStaffAge").textContent =
+      t.age_group === "18+" ? "18+ ПОДТВЕРЖДЁН" :
+      t.age_group === "16-17" ? "16–17 ПОДТВЕРЖДЕНО" :
+      "НЕ ПРОВЕРЕН";
+
+    document.getElementById("miniStaffDecision").textContent =
+      t.access_reason || "Проверь документ гостя.";
+
+    document.getElementById("miniStaffTicket").classList.remove("hidden");
+  }
+
+  async function miniStaffFindTicket() {
+    miniStaffCurrentCode = document.getElementById("miniStaffCode").value.trim();
+    if (!miniStaffCurrentCode) return;
+
+    try {
+      const data = await staffApi(
+        `/api/staff/tickets/${encodeURIComponent(miniStaffCurrentCode)}`
+      );
+      renderMiniStaffTicket(data.ticket);
+    } catch(e) {
+      document.getElementById("miniStaffTicket").classList.add("hidden");
+      if (tg?.showAlert) tg.showAlert(e.message || "Билет не найден");
+      else alert(e.message || "Билет не найден");
+    }
+  }
+
+  async function miniStaffSetAge(age_group) {
+    if (!miniStaffCurrentCode) return;
+    try {
+      const data = await staffApi(
+        `/api/staff/tickets/${encodeURIComponent(miniStaffCurrentCode)}/age`,
+        {
+          method:"POST",
+          body:JSON.stringify({age_group})
+        }
+      );
+      renderMiniStaffTicket(data.ticket);
+      if (tg?.HapticFeedback?.notificationOccurred) {
+        tg.HapticFeedback.notificationOccurred("success");
+      }
+    } catch(e) {
+      if (tg?.showAlert) tg.showAlert(e.message || "Не удалось сохранить");
+      else alert(e.message || "Не удалось сохранить");
+    }
+  }
+
+  document.getElementById("miniStaffFind").addEventListener("click", miniStaffFindTicket);
+  document.getElementById("miniStaffCode").addEventListener("keydown", e => {
+    if (e.key === "Enter") miniStaffFindTicket();
+  });
+  document.getElementById("miniAge16").addEventListener("click", () => miniStaffSetAge("16-17"));
+  document.getElementById("miniAge18").addEventListener("click", () => miniStaffSetAge("18+"));
+  document.getElementById("miniAgeReset").addEventListener("click", async () => {
+    if (!miniStaffCurrentCode) return;
+    try {
+      const data = await staffApi(
+        `/api/staff/tickets/${encodeURIComponent(miniStaffCurrentCode)}/age`,
+        {method:"DELETE"}
+      );
+      renderMiniStaffTicket(data.ticket);
+    } catch(e) {
+      if (tg?.showAlert) tg.showAlert(e.message || "Не удалось сбросить");
+      else alert(e.message || "Не удалось сбросить");
+    }
+  });
+
+
   (async () => {
     const ok = await auth();
     if (ok) {
+      await enableStaffModeIfAllowed();
       await loadTickets();
       setInterval(loadTickets, 10000);
     }

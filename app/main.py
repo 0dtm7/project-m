@@ -16,12 +16,16 @@ from pydantic import BaseModel
 
 from .db import get_conn
 
-app = FastAPI(title="PROJECT M backend", version="0.4.0")
+app = FastAPI(title="PROJECT M backend", version="0.4.1")
 
 QTICKETS_WEBHOOK_SECRET = os.getenv("QTICKETS_WEBHOOK_SECRET", "")
 QTICKETS_EVENT_ID = int(os.getenv("QTICKETS_EVENT_ID", "251223"))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 STAFF_CHECK_PIN = os.getenv("STAFF_CHECK_PIN", "")
+STAFF_TELEGRAM_IDS = {
+    int(x.strip()) for x in os.getenv("STAFF_TELEGRAM_IDS", "").split(",")
+    if x.strip().isdigit()
+}
 
 PUBLIC_BASE_URL = os.getenv(
     "PUBLIC_BASE_URL",
@@ -59,13 +63,13 @@ def root():
         "service": "project-m-backend",
         "app": "/app",
         "staff": "/staff",
-        "version": "0.4.0",
+        "version": "0.4.1",
     }
 
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "project-m-backend", "version": "0.4.0"}
+    return {"ok": True, "service": "project-m-backend", "version": "0.4.1"}
 
 
 @app.get("/app")
@@ -234,6 +238,41 @@ def verify_staff_session(value: str | None) -> None:
         raise HTTPException(401, "Invalid staff session")
 
 
+
+def verify_staff_telegram(init_data: str | None) -> dict[str, Any]:
+    user = verify_telegram_init_data(init_data or "")
+    if int(user["id"]) not in STAFF_TELEGRAM_IDS:
+        raise HTTPException(403, "Нет доступа к режиму сотрудника")
+    return user
+
+
+def verify_staff_access(
+    pm_staff: str | None,
+    telegram_init_data: str | None,
+) -> str:
+    if telegram_init_data:
+        user = verify_staff_telegram(telegram_init_data)
+        return f"telegram:{user['id']}"
+
+    verify_staff_session(pm_staff)
+    return "pin"
+
+
+@app.get("/api/staff/telegram/session")
+def staff_telegram_session(
+    x_telegram_init_data: str | None = Header(
+        default=None,
+        alias="X-Telegram-Init-Data",
+    ),
+):
+    user = verify_staff_telegram(x_telegram_init_data)
+    return {
+        "ok": True,
+        "staff": True,
+        "telegram_id": user["id"],
+    }
+
+
 @app.post("/api/staff/login")
 def staff_login(body: StaffLoginBody, response: Response):
     if not STAFF_CHECK_PIN:
@@ -323,8 +362,12 @@ def decorate_staff_ticket(ticket: dict[str, Any]):
 def staff_get_ticket(
     code: str,
     pm_staff: str | None = Cookie(default=None),
+    x_telegram_init_data: str | None = Header(
+        default=None,
+        alias="X-Telegram-Init-Data",
+    ),
 ):
-    verify_staff_session(pm_staff)
+    verify_staff_access(pm_staff, x_telegram_init_data)
 
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -341,8 +384,12 @@ def staff_set_age(
     code: str,
     body: AgeBody,
     pm_staff: str | None = Cookie(default=None),
+    x_telegram_init_data: str | None = Header(
+        default=None,
+        alias="X-Telegram-Init-Data",
+    ),
 ):
-    verify_staff_session(pm_staff)
+    checked_by = verify_staff_access(pm_staff, x_telegram_init_data)
 
     if body.age_group not in ("16-17", "18+"):
         raise HTTPException(400, "Недопустимый возрастной статус")
@@ -370,9 +417,9 @@ def staff_set_age(
             cur.execute(
                 """
                 INSERT INTO age_check_events(ticket_id, age_group, action, checked_by)
-                VALUES (%s, %s, 'verify', 'staff')
+                VALUES (%s, %s, 'verify', %s)
                 """,
-                (ticket["id"], body.age_group),
+                (ticket["id"], body.age_group, checked_by),
             )
 
             conn.commit()
@@ -385,8 +432,12 @@ def staff_set_age(
 def staff_reset_age(
     code: str,
     pm_staff: str | None = Cookie(default=None),
+    x_telegram_init_data: str | None = Header(
+        default=None,
+        alias="X-Telegram-Init-Data",
+    ),
 ):
-    verify_staff_session(pm_staff)
+    checked_by = verify_staff_access(pm_staff, x_telegram_init_data)
 
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -411,9 +462,9 @@ def staff_reset_age(
             cur.execute(
                 """
                 INSERT INTO age_check_events(ticket_id, age_group, action, checked_by)
-                VALUES (%s, NULL, 'reset', 'staff')
+                VALUES (%s, NULL, 'reset', %s)
                 """,
-                (ticket["id"],),
+                (ticket["id"], checked_by),
             )
 
             conn.commit()
