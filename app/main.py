@@ -5,6 +5,7 @@ import os
 import secrets
 import time
 import urllib.request
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -16,10 +17,13 @@ from pydantic import BaseModel
 
 from .db import get_conn
 
-app = FastAPI(title="PROJECT M backend", version="0.4.2")
+app = FastAPI(title="PROJECT M backend", version="0.5.0")
 
 QTICKETS_WEBHOOK_SECRET = os.getenv("QTICKETS_WEBHOOK_SECRET", "")
 QTICKETS_EVENT_ID = int(os.getenv("QTICKETS_EVENT_ID", "251223"))
+QTICKETS_SHOW_ID = int(os.getenv("QTICKETS_SHOW_ID", "950276"))
+QTICKETS_API_TOKEN = os.getenv("QTICKETS_API_TOKEN", "")
+CHECKIN_TEST_MODE = os.getenv("CHECKIN_TEST_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 STAFF_CHECK_PIN = os.getenv("STAFF_CHECK_PIN", "")
 STAFF_TELEGRAM_IDS = {
@@ -40,8 +44,12 @@ APP_HTML = Path(__file__).with_name("index.html")
 STAFF_HTML = Path(__file__).with_name("staff.html")
 
 SURGUT_TZ = timezone(timedelta(hours=5))
+MOSCOW_TZ = timezone(timedelta(hours=3))
+
+DOORS_OPEN = datetime(2026, 9, 5, 16, 0, tzinfo=SURGUT_TZ)
 EVENT_DATE = datetime(2026, 9, 5, 18, 0, tzinfo=SURGUT_TZ)
 ADULT_ONLY_TIME = datetime(2026, 9, 5, 22, 0, tzinfo=SURGUT_TZ)
+EVENT_END = datetime(2026, 9, 6, 2, 0, tzinfo=SURGUT_TZ)
 
 
 class TelegramAuthBody(BaseModel):
@@ -63,13 +71,13 @@ def root():
         "service": "project-m-backend",
         "app": "/app",
         "staff": "/staff",
-        "version": "0.4.2",
+        "version": "0.5.0",
     }
 
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "project-m-backend", "version": "0.4.2"}
+    return {"ok": True, "service": "project-m-backend", "version": "0.5.0"}
 
 
 @app.get("/app")
@@ -193,6 +201,51 @@ async def telegram_bot_webhook(request: Request):
 
 
 # ---------------------------
+# QTickets REST API
+# ---------------------------
+
+def qtickets_api(method: str, path: str, payload: dict[str, Any] | None = None):
+    if not QTICKETS_API_TOKEN:
+        raise HTTPException(503, "QTICKETS_API_TOKEN is not configured")
+
+    url = f"https://qtickets.ru/api/rest/v1/{path.lstrip('/')}"
+    body = None if payload is None else json.dumps(
+        payload, ensure_ascii=False
+    ).encode("utf-8")
+
+    request = urllib.request.Request(
+        url,
+        data=body,
+        method=method,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {QTICKETS_API_TOKEN}",
+            "User-Agent": "PROJECT-M/0.5",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = exc.read().decode("utf-8")
+        except Exception:
+            detail = ""
+        raise HTTPException(
+            status_code=502,
+            detail=f"QTickets API error {exc.code}: {detail[:300]}",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"QTickets API unavailable: {type(exc).__name__}",
+        )
+
+
+# ---------------------------
 # Staff auth
 # ---------------------------
 
@@ -311,12 +364,21 @@ def access_decision(age_group: str | None):
     if not age_group:
         return None, "Проверь документ гостя."
 
+    if now < DOORS_OPEN:
+        if CHECKIN_TEST_MODE:
+            if age_group == "18+":
+                return True, "ТЕСТОВЫЙ РЕЖИМ: 18+ подтверждён."
+            if age_group == "16-17":
+                return True, "ТЕСТОВЫЙ РЕЖИМ: 16–17 подтверждено."
+        return None, "Возраст подтверждён. Вход ещё не открыт."
+
+    if now >= EVENT_END:
+        return False, "Мероприятие уже завершено."
+
     if age_group == "18+":
         return True, "18+ подтверждён. Допуск разрешён."
 
     if age_group == "16-17":
-        if now.date() < EVENT_DATE.date():
-            return None, "16–17 подтверждено. Сейчас тестовый режим до мероприятия."
         if now < ADULT_ONLY_TIME:
             return True, "16–17 подтверждено. До 22:00 допуск разрешён."
         return False, "16–17. После 22:00 НЕ ДОПУСКАТЬ."
@@ -331,6 +393,7 @@ def fetch_ticket_by_code(cur, code: str):
             t.id,
             t.order_id,
             t.barcode,
+            t.show_id,
             t.ticket_name,
             t.status,
             t.checked_at,
@@ -471,6 +534,128 @@ def staff_reset_age(
             ticket = fetch_ticket_by_code(cur, str(ticket["id"]))
 
     return {"ok": True, "ticket": decorate_staff_ticket(ticket)}
+
+
+@app.post("/api/staff/tickets/{code}/admit")
+def staff_admit_ticket(
+    code: str,
+    pm_staff: str | None = Cookie(default=None),
+    x_telegram_init_data: str | None = Header(
+        default=None,
+        alias="X-Telegram-Init-Data",
+    ),
+):
+    checked_by = verify_staff_access(pm_staff, x_telegram_init_data)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            ticket = fetch_ticket_by_code(cur, code.strip())
+
+            if not ticket:
+                raise HTTPException(404, "Билет не найден")
+
+            if int(ticket.get("event_id") or 0) != QTICKETS_EVENT_ID:
+                raise HTTPException(400, "Билет относится к другому мероприятию")
+
+            if ticket.get("order_status") in ("cancelled", "refunded"):
+                raise HTTPException(409, "Билет отменён или возвращён")
+
+            if ticket.get("status") == "used" or ticket.get("checked_at"):
+                raise HTTPException(409, "Билет уже был использован")
+
+            allowed, reason = access_decision(ticket.get("age_group"))
+            if allowed is not True:
+                raise HTTPException(409, reason)
+
+            barcode = str(ticket.get("barcode") or "").strip()
+            if not barcode:
+                raise HTTPException(400, "У билета отсутствует barcode")
+
+            show_id = int(ticket.get("show_id") or QTICKETS_SHOW_ID)
+
+            # Сначала сверяем актуальное состояние в QTickets.
+            remote = qtickets_api(
+                "GET",
+                f"shows/{show_id}/barcode/{barcode}",
+            )
+
+            remote_checked_at = remote.get("checked_at") if isinstance(remote, dict) else None
+            if remote_checked_at:
+                cur.execute(
+                    """
+                    UPDATE qt_tickets
+                    SET status='used',
+                        checked_at=%s,
+                        updated_at=NOW()
+                    WHERE id=%s
+                    """,
+                    (remote_checked_at, ticket["id"]),
+                )
+                conn.commit()
+                raise HTTPException(
+                    409,
+                    f"Билет уже отмечен на входе: {remote_checked_at}",
+                )
+
+            checked_at = datetime.now(MOSCOW_TZ).isoformat(timespec="seconds")
+
+            result = qtickets_api(
+                "POST",
+                f"shows/{show_id}/barcode/{barcode}",
+                {"checked_at": checked_at},
+            )
+
+            saved_checked_at = (
+                result.get("checked_at")
+                if isinstance(result, dict)
+                else None
+            ) or checked_at
+
+            cur.execute(
+                """
+                UPDATE qt_tickets
+                SET status='used',
+                    checked_at=%s,
+                    updated_at=NOW()
+                WHERE id=%s
+                """,
+                (saved_checked_at, ticket["id"]),
+            )
+
+            cur.execute(
+                """
+                INSERT INTO entry_check_events(
+                    ticket_id,
+                    barcode,
+                    show_id,
+                    action,
+                    checked_by,
+                    qtickets_response
+                )
+                VALUES (%s, %s, %s, 'admit', %s, %s::jsonb)
+                """,
+                (
+                    ticket["id"],
+                    barcode,
+                    show_id,
+                    checked_by,
+                    json.dumps(result, ensure_ascii=False),
+                ),
+            )
+
+            conn.commit()
+            ticket = fetch_ticket_by_code(cur, str(ticket["id"]))
+
+    decorated = decorate_staff_ticket(ticket)
+    decorated["access_now"] = False
+    decorated["access_reason"] = "ГОСТЬ ПРОПУЩЕН. Билет использован."
+
+    return {
+        "ok": True,
+        "admitted": True,
+        "ticket": decorated,
+        "qtickets": result,
+    }
 
 
 # ---------------------------

@@ -617,6 +617,17 @@
       background:#e47d74;
       color:#2d0d0a;
     }
+    .admit-btn{
+      margin-top:10px;
+      background:#91d49b;
+      color:#102014;
+      box-shadow:4px 4px 0 rgba(17,18,15,.28);
+    }
+    .admit-btn:disabled{
+      opacity:.38;
+      box-shadow:none;
+      cursor:not-allowed;
+    }
     .check-result{
       margin-top:12px;
       border:1px solid var(--line);
@@ -843,6 +854,8 @@
         <button id="miniAge16" class="check-btn" type="button">16–17 ЛЕТ</button>
         <button id="miniAge18" class="check-btn ok" type="button">18+</button>
       </div>
+
+      <button id="miniAdmit" class="cta admit-btn" type="button" disabled>ПРОПУСТИТЬ</button>
       <button id="miniAgeReset" class="check-btn reset" type="button">СБРОСИТЬ ПРОВЕРКУ</button>
     </div>
   </section>
@@ -1126,6 +1139,20 @@
     document.getElementById("miniStaffDecision").textContent =
       t.access_reason || "Проверь документ гостя.";
 
+    const admitBtn = document.getElementById("miniAdmit");
+    const alreadyUsed = t.status === "used" || Boolean(t.checked_at);
+
+    if (alreadyUsed) {
+      admitBtn.disabled = true;
+      admitBtn.textContent = "УЖЕ ИСПОЛЬЗОВАН";
+    } else if (t.access_now === true) {
+      admitBtn.disabled = false;
+      admitBtn.textContent = "ПРОПУСТИТЬ";
+    } else {
+      admitBtn.disabled = true;
+      admitBtn.textContent = "ПРОПУСТИТЬ";
+    }
+
     document.getElementById("miniStaffTicket").classList.remove("hidden");
   }
 
@@ -1250,6 +1277,45 @@
   });
   document.getElementById("miniAge16").addEventListener("click", () => miniStaffSetAge("16-17"));
   document.getElementById("miniAge18").addEventListener("click", () => miniStaffSetAge("18+"));
+
+  document.getElementById("miniAdmit").addEventListener("click", async () => {
+    if (!miniStaffCurrentCode) return;
+
+    const btn = document.getElementById("miniAdmit");
+    btn.disabled = true;
+    btn.textContent = "ПРОПУСКАЕМ...";
+
+    try {
+      const data = await staffApi(
+        `/api/staff/tickets/${encodeURIComponent(miniStaffCurrentCode)}/admit`,
+        {method:"POST"}
+      );
+
+      renderMiniStaffTicket(data.ticket);
+
+      if (tg?.HapticFeedback?.notificationOccurred) {
+        tg.HapticFeedback.notificationOccurred("success");
+      }
+
+      if (tg?.showAlert) {
+        tg.showAlert("Гость пропущен. Билет отмечен использованным в QTickets.");
+      }
+    } catch(e) {
+      if (tg?.HapticFeedback?.notificationOccurred) {
+        tg.HapticFeedback.notificationOccurred("error");
+      }
+      if (tg?.showAlert) tg.showAlert(e.message || "Не удалось пропустить гостя");
+      else alert(e.message || "Не удалось пропустить гостя");
+
+      try {
+        const fresh = await staffApi(
+          `/api/staff/tickets/${encodeURIComponent(miniStaffCurrentCode)}`
+        );
+        renderMiniStaffTicket(fresh.ticket);
+      } catch {}
+    }
+  });
+
   document.getElementById("miniAgeReset").addEventListener("click", async () => {
     if (!miniStaffCurrentCode) return;
     try {
