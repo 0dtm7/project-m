@@ -4,6 +4,7 @@ import json
 import os
 import secrets
 import time
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -15,11 +16,19 @@ from pydantic import BaseModel
 
 from .db import get_conn
 
-app = FastAPI(title="PROJECT M backend", version="0.3.0")
+app = FastAPI(title="PROJECT M backend", version="0.3.2")
 
 QTICKETS_WEBHOOK_SECRET = os.getenv("QTICKETS_WEBHOOK_SECRET", "")
 QTICKETS_EVENT_ID = int(os.getenv("QTICKETS_EVENT_ID", "251223"))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+
+PUBLIC_BASE_URL = os.getenv(
+    "PUBLIC_BASE_URL",
+    "https://project-m-a8gu.onrender.com"
+).rstrip("/")
+
+MINI_APP_URL = f"{PUBLIC_BASE_URL}/app"
+TELEGRAM_WEBHOOK_URL = f"{PUBLIC_BASE_URL}/api/telegram/webhook"
 QTICKETS_EVENT_URL = f"https://qtickets.ru/event/{QTICKETS_EVENT_ID}"
 
 APP_HTML = Path(__file__).with_name("index.html")
@@ -31,18 +40,143 @@ class TelegramAuthBody(BaseModel):
 
 @app.get("/")
 def root():
-    return {"ok": True, "service": "project-m-backend", "app": "/app"}
+    return {
+        "ok": True,
+        "service": "project-m-backend",
+        "app": "/app",
+        "version": "0.3.2",
+    }
 
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "project-m-backend", "version": "0.3.0"}
+    return {"ok": True, "service": "project-m-backend", "version": "0.3.2"}
 
 
 @app.get("/app")
 def mini_app():
     return FileResponse(APP_HTML)
 
+
+# ---------------------------
+# Telegram Bot API
+# ---------------------------
+
+def telegram_api(method: str, payload: dict[str, Any] | None = None):
+    if not TELEGRAM_BOT_TOKEN:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is not configured")
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}"
+    data = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
+
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    with urllib.request.urlopen(req, timeout=12) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def project_m_keyboard():
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "ОТКРЫТЬ ПРОЕКТ «М»",
+                    "web_app": {"url": MINI_APP_URL},
+                }
+            ]
+        ]
+    }
+
+
+def send_project_m_start(chat_id: int):
+    text = (
+        "<b>ПРОЕКТ «М»</b>\n"
+        "05.09 • 18:00 • КОМПРОМАТ\n\n"
+        "Билеты, таймер, line-up и твой пропуск — внутри приложения.\n\n"
+        "<b>До 22:00 — 16+</b>\n"
+        "<b>После 22:00 — 18+</b>"
+    )
+
+    return telegram_api(
+        "sendMessage",
+        {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "reply_markup": project_m_keyboard(),
+        },
+    )
+
+
+@app.on_event("startup")
+def configure_telegram_bot():
+    if not TELEGRAM_BOT_TOKEN:
+        print("Telegram bot setup skipped: TELEGRAM_BOT_TOKEN missing")
+        return
+
+    try:
+        telegram_api(
+            "setWebhook",
+            {
+                "url": TELEGRAM_WEBHOOK_URL,
+                "allowed_updates": ["message"],
+            },
+        )
+
+        # Убираем список команд — бот используется как вход в Mini App.
+        telegram_api("deleteMyCommands", {})
+
+        print("Telegram webhook configured")
+    except Exception as exc:
+        print(f"Telegram setup failed: {type(exc).__name__}")
+
+
+@app.post("/api/telegram/webhook")
+async def telegram_bot_webhook(request: Request):
+    update = await request.json()
+    message = update.get("message") or {}
+    chat = message.get("chat") or {}
+
+    if chat.get("type") != "private" or not chat.get("id"):
+        return {"ok": True}
+
+    text = (message.get("text") or "").strip()
+    chat_id = int(chat["id"])
+
+    # /start — красивое приветствие.
+    if text.startswith("/start"):
+        try:
+            send_project_m_start(chat_id)
+        except Exception:
+            pass
+        return {"ok": True}
+
+    # Если человек всё же пишет в поле ввода —
+    # мягко возвращаем его в приложение.
+    if text:
+        try:
+            telegram_api(
+                "sendMessage",
+                {
+                    "chat_id": chat_id,
+                    "text": "Всё основное — внутри ПРОЕКТА «М» ↓",
+                    "reply_markup": project_m_keyboard(),
+                },
+            )
+        except Exception:
+            pass
+
+    return {"ok": True}
+
+
+# ---------------------------
+# QTickets
+# ---------------------------
 
 def verify_qtickets_signature(body: bytes, signature: str | None) -> None:
     if not QTICKETS_WEBHOOK_SECRET:
@@ -59,6 +193,10 @@ def verify_qtickets_signature(body: bytes, signature: str | None) -> None:
     if not hmac.compare_digest(expected, signature):
         raise HTTPException(401, "Invalid X-Signature")
 
+
+# ---------------------------
+# Telegram Mini App auth
+# ---------------------------
 
 def verify_telegram_init_data(init_data: str) -> dict[str, Any]:
     if not TELEGRAM_BOT_TOKEN:
