@@ -9,7 +9,7 @@ import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlencode
 
 from fastapi import Cookie, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 from .db import get_conn
 
-app = FastAPI(title="PROJECT M backend", version="0.5.1")
+app = FastAPI(title="PROJECT M backend", version="0.5.2")
 
 QTICKETS_WEBHOOK_SECRET = os.getenv("QTICKETS_WEBHOOK_SECRET", "")
 QTICKETS_EVENT_ID = int(os.getenv("QTICKETS_EVENT_ID", "251223"))
@@ -71,13 +71,13 @@ def root():
         "service": "project-m-backend",
         "app": "/app",
         "staff": "/staff",
-        "version": "0.5.1",
+        "version": "0.5.2",
     }
 
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "project-m-backend", "version": "0.5.1"}
+    return {"ok": True, "service": "project-m-backend", "version": "0.5.2"}
 
 
 @app.get("/app")
@@ -792,6 +792,36 @@ def extract_purchase_token(value: Any) -> str | None:
     return None
 
 
+def extract_purchase_token_from_utm(value: Any) -> str | None:
+    """
+    Fallback channel for purchases opened as a normal QTickets page.
+    We put pm_<purchase_token> into a standard UTM value.
+    QTickets stores UTM data in the order/webhook payload.
+    """
+    value = normalize_custom(value)
+
+    if isinstance(value, dict):
+        for item in value.values():
+            token = extract_purchase_token_from_utm(item)
+            if token:
+                return token
+        return None
+
+    if isinstance(value, list):
+        for item in value:
+            token = extract_purchase_token_from_utm(item)
+            if token:
+                return token
+        return None
+
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("pm_") and len(text) > 3:
+            return text[3:]
+
+    return None
+
+
 def client_fields(payload: dict[str, Any]):
     client = payload.get("client") or {}
     details = client.get("details") or {}
@@ -832,7 +862,10 @@ def resolve_telegram_id(cur, purchase_token: str | None) -> int | None:
 def upsert_order(cur, payload: dict[str, Any], status: str):
     email, phone, name = client_fields(payload)
     custom = normalize_custom(payload.get("custom"))
-    purchase_token = extract_purchase_token(custom)
+    purchase_token = (
+        extract_purchase_token(custom)
+        or extract_purchase_token_from_utm(payload.get("utm"))
+    )
     telegram_id = resolve_telegram_id(cur, purchase_token)
 
     cur.execute(
@@ -1002,10 +1035,17 @@ def create_purchase_session(
             )
             conn.commit()
 
+    fallback_query = urlencode({
+        "utm_source": "project_m",
+        "utm_medium": "telegram_miniapp",
+        "utm_campaign": f"pm_{token}",
+    })
+    purchase_url = f"{QTICKETS_EVENT_URL}?{fallback_query}"
+
     return {
         "ok": True,
         "purchase_token": token,
-        "qtickets_url": QTICKETS_EVENT_URL,
+        "qtickets_url": purchase_url,
         "custom": {"purchase_token": token},
     }
 

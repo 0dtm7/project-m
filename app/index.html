@@ -8,7 +8,7 @@
   <title>ПРОЕКТ «М»</title>
 
   <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
-  <script defer src="https://cdn.qtickets.tech/openapi.js"></script>
+  <script id="qticketsSdk" defer src="https://cdn.qtickets.tech/openapi.js"></script>
 
   <style>
     :root{
@@ -286,6 +286,7 @@
     }
 
     .cta{
+      display:block;
       width:100%;
       border:2px solid var(--ink);
       background:var(--ink);
@@ -296,6 +297,9 @@
       text-transform:uppercase;
       margin-top:14px;
       box-shadow:4px 4px 0 var(--acid-strong);
+      text-align:center;
+      text-decoration:none;
+      cursor:pointer;
     }
 
     .cta:active{transform:translate(2px,2px);box-shadow:2px 2px 0 var(--acid-strong)}
@@ -742,8 +746,12 @@
           ПОСЛЕ 22:00 — 18+
         </div>
 
-        <button id="buyBtn" class="cta" type="button">Купить билет</button>
-        <a id="qticketsDynamic" class="qtickets-button hidden" href="https://qtickets.ru/event/251223">Купить билет</a>
+        <button id="buyBtn" class="cta" type="button" disabled>ГОТОВИМ ПОКУПКУ...</button>
+        <a id="qticketsDynamic"
+           class="qtickets-button cta hidden"
+           href="https://qtickets.ru/event/251223"
+           rel="noopener">КУПИТЬ БИЛЕТ</a>
+        <div id="purchaseHint" class="info-text" style="margin-top:8px;text-align:center"></div>
         <div id="authError" class="error hidden"></div>
       </div>
     </div>
@@ -1211,45 +1219,153 @@
     }
   }
 
-  buyBtn.addEventListener("click", async () => {
-    if (!initData) return;
+  let purchasePreparing = null;
+  let purchaseReady = false;
+  let purchaseSessionCreatedAt = 0;
 
-    buyBtn.disabled = true;
-    buyBtn.textContent = "ОТКРЫВАЕМ QTICKETS...";
-
-    try {
-      const res = await fetch("/api/purchase-session", {
-        method:"POST",
-        headers:{"X-Telegram-Init-Data":initData}
-      });
-
-      if (!res.ok) throw new Error("session");
-
-      const data = await res.json();
-
-      qticketsDynamic.href = data.qtickets_url;
-      qticketsDynamic.setAttribute("data-custom", JSON.stringify(data.custom));
-
-      if (window.qTickets?.init) {
-        window.qTickets.init();
-        setTimeout(() => qticketsDynamic.click(), 80);
-      } else {
-        qticketsDynamic.click();
-      }
-    } catch {
-      showError("Не получилось открыть покупку.");
-    } finally {
-      setTimeout(() => {
-        buyBtn.disabled = false;
-        buyBtn.textContent = "КУПИТЬ БИЛЕТ";
-      }, 700);
-
-      // Если пользователь быстро вернулся из QTickets,
-      // начинаем искать новый билет без ручного обновления.
-      setTimeout(() => loadTickets({background:true}), 1200);
-      setTimeout(() => loadTickets({background:true}), 4500);
+  function waitForQTickets(timeoutMs = 8000) {
+    if (window.qTickets?.init) {
+      return Promise.resolve(true);
     }
+
+    return new Promise((resolve) => {
+      const started = Date.now();
+      const timer = setInterval(() => {
+        if (window.qTickets?.init) {
+          clearInterval(timer);
+          resolve(true);
+          return;
+        }
+
+        if (Date.now() - started >= timeoutMs) {
+          clearInterval(timer);
+          resolve(false);
+        }
+      }, 100);
+    });
+  }
+
+  async function preparePurchaseButton({force = false} = {}) {
+    if (!initData) return false;
+
+    // Purchase sessions live for 2 hours on the backend.
+    // Refresh locally after 90 minutes to avoid edge cases.
+    const stillFresh =
+      purchaseReady &&
+      purchaseSessionCreatedAt &&
+      (Date.now() - purchaseSessionCreatedAt) < 90 * 60 * 1000;
+
+    if (!force && stillFresh) {
+      return true;
+    }
+
+    if (purchasePreparing) {
+      return purchasePreparing;
+    }
+
+    purchasePreparing = (async () => {
+      purchaseReady = false;
+
+      buyBtn.classList.remove("hidden");
+      buyBtn.disabled = true;
+      buyBtn.textContent = "ГОТОВИМ ПОКУПКУ...";
+      qticketsDynamic.classList.add("hidden");
+
+      if (purchaseHint) {
+        purchaseHint.textContent = "";
+      }
+
+      try {
+        const res = await fetch("/api/purchase-session", {
+          method:"POST",
+          headers:{"X-Telegram-Init-Data":initData},
+          cache:"no-store"
+        });
+
+        if (!res.ok) {
+          throw new Error("session");
+        }
+
+        const data = await res.json();
+
+        // IMPORTANT:
+        // This is now the REAL element the user taps.
+        // No delayed/synthetic .click() is used anymore.
+        qticketsDynamic.href = data.qtickets_url;
+        qticketsDynamic.setAttribute(
+          "data-custom",
+          JSON.stringify(data.custom)
+        );
+
+        purchaseSessionCreatedAt = Date.now();
+        purchaseReady = true;
+
+        // Show the real link immediately.
+        // If QTickets SDK is slow/unavailable, href itself is a working
+        // fallback and contains a UTM purchase token for account linking.
+        buyBtn.classList.add("hidden");
+        qticketsDynamic.classList.remove("hidden");
+
+        const sdkReady = await waitForQTickets();
+
+        if (sdkReady) {
+          try {
+            window.qTickets.init();
+            if (purchaseHint) {
+              purchaseHint.textContent = "";
+            }
+          } catch {
+            // Keep the actual href fallback active.
+          }
+        } else if (purchaseHint) {
+          purchaseHint.textContent =
+            "Покупка откроется на странице QTickets.";
+        }
+
+        return true;
+      } catch {
+        purchaseReady = false;
+        buyBtn.classList.remove("hidden");
+        buyBtn.disabled = false;
+        buyBtn.textContent = "ПОВТОРИТЬ ОТКРЫТИЕ";
+        qticketsDynamic.classList.add("hidden");
+
+        if (purchaseHint) {
+          purchaseHint.textContent =
+            "Не удалось подготовить покупку. Нажми ещё раз.";
+        }
+
+        return false;
+      } finally {
+        purchasePreparing = null;
+      }
+    })();
+
+    return purchasePreparing;
+  }
+
+  // This button is only a retry control when preparation itself failed.
+  // It never opens QTickets using a synthetic click.
+  buyBtn.addEventListener("click", () => {
+    preparePurchaseButton({force:true});
   });
+
+  qticketsDynamic.addEventListener("click", () => {
+    if (tg?.HapticFeedback?.impactOccurred) {
+      try { tg.HapticFeedback.impactOccurred("light"); } catch {}
+    }
+
+    // Prepare a fresh token later for a possible second purchase.
+    // The current click already uses the token present on the anchor.
+    setTimeout(() => {
+      purchaseReady = false;
+      preparePurchaseButton({force:true});
+    }, 8000);
+
+    setTimeout(() => loadTickets({background:true}), 1500);
+    setTimeout(() => loadTickets({background:true}), 5000);
+  });
+
 
   refreshBtn.addEventListener("click", () => {
     loadTickets({background:true, force:true});
@@ -1503,6 +1619,13 @@
   function refreshTicketsOnReturn() {
     if (document.visibilityState === "visible") {
       loadTickets({background:true});
+
+      if (
+        !purchaseSessionCreatedAt ||
+        (Date.now() - purchaseSessionCreatedAt) > 90 * 60 * 1000
+      ) {
+        preparePurchaseButton({force:true});
+      }
     }
   }
 
@@ -1511,15 +1634,22 @@
   window.addEventListener("pageshow", refreshTicketsOnReturn);
 
   (async () => {
+    // Start preparing QTickets immediately. It verifies the same Telegram
+    // initData server-side, so this does not need to wait for /auth.
+    const purchasePromise = preparePurchaseButton();
+
     const ok = await auth();
     if (!ok) return;
 
-    // Билеты больше не ждут проверки staff-доступа.
-    // На обычном телефоне они начинают грузиться сразу после auth.
+    // Tickets, staff access and purchase preparation run independently.
     const ticketsPromise = loadTickets();
     const staffPromise = enableStaffModeIfAllowed();
 
-    await Promise.allSettled([ticketsPromise, staffPromise]);
+    await Promise.allSettled([
+      ticketsPromise,
+      staffPromise,
+      purchasePromise
+    ]);
 
     // Если пользователь уже успел переключить вкладку — не ломаем его выбор.
     let savedTab = null;
