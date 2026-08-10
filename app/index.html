@@ -8,7 +8,7 @@
   <title>ПРОЕКТ «М»</title>
 
   <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
-  <script src="https://cdn.qtickets.tech/openapi.js"></script>
+  <script defer src="https://cdn.qtickets.tech/openapi.js"></script>
 
   <style>
     :root{
@@ -26,6 +26,11 @@
 
     *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 
+    button,a{
+      touch-action:manipulation;
+      -webkit-touch-callout:none;
+    }
+
     html,body{
       margin:0;
       min-height:100%;
@@ -37,6 +42,7 @@
     body{
       padding:0;
       overflow-x:hidden;
+      overscroll-behavior-y:contain;
     }
 
     button,a{font:inherit}
@@ -311,12 +317,17 @@
       overflow-x:auto;
       scrollbar-width:none;
       padding:15px 1px 5px;
+      -webkit-overflow-scrolling:touch;
+      overscroll-behavior-x:contain;
+      scroll-snap-type:x proximity;
+      touch-action:pan-x;
     }
 
     .tabs::-webkit-scrollbar{display:none}
 
     .tab{
       flex:0 0 auto;
+      scroll-snap-align:start;
       border:1.5px solid var(--ink);
       background:transparent;
       color:var(--ink);
@@ -332,7 +343,11 @@
       color:var(--paper);
     }
 
-    .panel{display:none;padding-top:9px}
+    .panel{
+      display:none;
+      padding-top:9px;
+      min-height:100dvh;
+    }
     .panel.active{display:block}
 
     .section-title{
@@ -495,6 +510,17 @@
       font-weight:950;
       margin-top:4px;
     }
+
+    .ticket-refresh-state{
+      min-height:18px;
+      margin:6px 2px 0;
+      color:var(--muted);
+      font-size:11px;
+      text-align:center;
+      opacity:0;
+      transition:opacity .15s ease;
+    }
+    .ticket-refresh-state.show{opacity:1}
 
     .empty{
       padding:22px 15px;
@@ -772,6 +798,7 @@
       <div class="empty">Проверяем Telegram-профиль...</div>
     </div>
     <button id="refreshBtn" class="ghost" type="button">Обновить билеты</button>
+    <div id="ticketRefreshState" class="ticket-refresh-state">ОБНОВЛЯЕМ…</div>
   </section>
 
   <section id="panel-lineup" class="panel">
@@ -880,6 +907,7 @@
   const ticketsBox = document.getElementById("tickets");
   const buyBtn = document.getElementById("buyBtn");
   const refreshBtn = document.getElementById("refreshBtn");
+  const ticketRefreshState = document.getElementById("ticketRefreshState");
   const authError = document.getElementById("authError");
   const qticketsDynamic = document.getElementById("qticketsDynamic");
 
@@ -916,7 +944,57 @@
   updateCountdown();
   setInterval(updateCountdown, 1000);
 
-  function switchTab(name) {
+  if ("scrollRestoration" in history) {
+    history.scrollRestoration = "manual";
+  }
+
+  let currentTab = "home";
+  let tabScroll = {};
+
+  try {
+    tabScroll = JSON.parse(sessionStorage.getItem("pm_tab_scroll") || "{}");
+  } catch {
+    tabScroll = {};
+  }
+
+  function saveTabState() {
+    tabScroll[currentTab] = window.scrollY || 0;
+    try {
+      sessionStorage.setItem("pm_tab_scroll", JSON.stringify(tabScroll));
+      sessionStorage.setItem("pm_active_tab", currentTab);
+    } catch {}
+  }
+
+  function restoreScrollPosition(y) {
+    const target = Math.max(0, Number(y) || 0);
+
+    // Двойной requestAnimationFrame нужен для Telegram/iOS:
+    // сначала меняется высота panel, потом возвращаем позицию.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const maxY = Math.max(
+          0,
+          document.documentElement.scrollHeight - window.innerHeight
+        );
+        window.scrollTo(0, Math.min(target, maxY));
+      });
+    });
+  }
+
+  function switchTab(name, options = {}) {
+    const {
+      restore = true,
+      haptic = true,
+      force = false
+    } = options;
+
+    if (!force && name === currentTab) {
+      return;
+    }
+
+    const previousY = window.scrollY || 0;
+    tabScroll[currentTab] = previousY;
+
     document.querySelectorAll(".panel").forEach(el => {
       el.classList.toggle("active", el.id === `panel-${name}`);
     });
@@ -925,12 +1003,40 @@
       btn.classList.toggle("active", btn.dataset.tab === name);
     });
 
-    window.scrollTo({top:0, behavior:"smooth"});
+    currentTab = name;
+
+    try {
+      sessionStorage.setItem("pm_active_tab", name);
+      sessionStorage.setItem("pm_tab_scroll", JSON.stringify(tabScroll));
+    } catch {}
+
+    // Первый заход на новую вкладку оставляет экран примерно там же,
+    // повторный возвращает именно туда, где пользователь остановился.
+    if (restore) {
+      const targetY = Object.prototype.hasOwnProperty.call(tabScroll, name)
+        ? tabScroll[name]
+        : previousY;
+      restoreScrollPosition(targetY);
+    }
+
+    if (haptic && tg?.HapticFeedback?.selectionChanged) {
+      try { tg.HapticFeedback.selectionChanged(); } catch {}
+    }
+
+    if (name === "tickets") {
+      loadTickets({background:true});
+    }
   }
 
   document.querySelectorAll("[data-tab]").forEach(btn => {
-    btn.addEventListener("click", () => switchTab(btn.dataset.tab));
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      switchTab(btn.dataset.tab);
+    });
   });
+
+  window.addEventListener("pagehide", saveTabState);
+  window.addEventListener("beforeunload", saveTabState);
 
   function showError(text) {
     authError.textContent = text;
@@ -1031,21 +1137,77 @@
     }
   }
 
-  async function loadTickets() {
-    if (!initData) return;
+  let ticketsLoaded = false;
+  let ticketsLoading = false;
+  let lastTicketsSignature = "";
 
-    ticketsBox.innerHTML = `<div class="empty">ПРОВЕРЯЕМ БИЛЕТЫ...</div>`;
+  function ticketsSignature(items) {
+    return JSON.stringify((items || []).map(t => ({
+      id:t.id,
+      barcode:t.barcode,
+      ticket_name:t.ticket_name,
+      original_price:t.original_price,
+      status:t.status,
+      checked_at:t.checked_at,
+      age_group:t.age_group,
+      age_verified_at:t.age_verified_at,
+      pdf_url:t.pdf_url
+    })));
+  }
+
+  async function loadTickets(options = {}) {
+    const {
+      background = false,
+      force = false
+    } = options;
+
+    if (!initData || ticketsLoading) return;
+
+    ticketsLoading = true;
+
+    const shouldShowInitialLoader = !ticketsLoaded && !background;
+    if (shouldShowInitialLoader) {
+      ticketsBox.innerHTML = `<div class="empty">ПРОВЕРЯЕМ БИЛЕТЫ...</div>`;
+    } else if (ticketRefreshState) {
+      ticketRefreshState.classList.add("show");
+    }
 
     try {
       const res = await fetch("/api/me/tickets", {
-        headers:{"X-Telegram-Init-Data":initData}
+        headers:{"X-Telegram-Init-Data":initData},
+        cache:"no-store"
       });
 
       if (!res.ok) throw new Error("tickets");
+
       const data = await res.json();
-      renderTickets(data.tickets || []);
+      const items = data.tickets || [];
+      const signature = ticketsSignature(items);
+
+      // Не трогаем DOM, если с билетами ничего не изменилось.
+      // Это убирает прыжки экрана на телефоне.
+      if (force || !ticketsLoaded || signature !== lastTicketsSignature) {
+        const beforeY = window.scrollY || 0;
+        renderTickets(items);
+        lastTicketsSignature = signature;
+
+        if (currentTab === "tickets") {
+          restoreScrollPosition(beforeY);
+        }
+      }
+
+      ticketsLoaded = true;
     } catch {
-      ticketsBox.innerHTML = `<div class="empty">Не получилось загрузить билеты.</div>`;
+      // Если билет уже был показан — не стираем его из-за временной ошибки сети.
+      if (!ticketsLoaded) {
+        ticketsBox.innerHTML =
+          `<div class="empty">Не получилось загрузить билеты. Нажми «Обновить билеты».</div>`;
+      }
+    } finally {
+      ticketsLoading = false;
+      if (ticketRefreshState) {
+        setTimeout(() => ticketRefreshState.classList.remove("show"), 180);
+      }
     }
   }
 
@@ -1081,10 +1243,17 @@
         buyBtn.disabled = false;
         buyBtn.textContent = "КУПИТЬ БИЛЕТ";
       }, 700);
+
+      // Если пользователь быстро вернулся из QTickets,
+      // начинаем искать новый билет без ручного обновления.
+      setTimeout(() => loadTickets({background:true}), 1200);
+      setTimeout(() => loadTickets({background:true}), 4500);
     }
   });
 
-  refreshBtn.addEventListener("click", loadTickets);
+  refreshBtn.addEventListener("click", () => {
+    loadTickets({background:true, force:true});
+  });
 
   let secretTaps = 0;
   const mega18 = document.getElementById("mega18");
@@ -1331,13 +1500,47 @@
   });
 
 
+  function refreshTicketsOnReturn() {
+    if (document.visibilityState === "visible") {
+      loadTickets({background:true});
+    }
+  }
+
+  document.addEventListener("visibilitychange", refreshTicketsOnReturn);
+  window.addEventListener("focus", refreshTicketsOnReturn);
+  window.addEventListener("pageshow", refreshTicketsOnReturn);
+
   (async () => {
     const ok = await auth();
-    if (ok) {
-      await enableStaffModeIfAllowed();
-      await loadTickets();
-      setInterval(loadTickets, 10000);
+    if (!ok) return;
+
+    // Билеты больше не ждут проверки staff-доступа.
+    // На обычном телефоне они начинают грузиться сразу после auth.
+    const ticketsPromise = loadTickets();
+    const staffPromise = enableStaffModeIfAllowed();
+
+    await Promise.allSettled([ticketsPromise, staffPromise]);
+
+    // Если пользователь уже успел переключить вкладку — не ломаем его выбор.
+    let savedTab = null;
+    try {
+      savedTab = sessionStorage.getItem("pm_active_tab");
+    } catch {}
+
+    if (
+      savedTab &&
+      savedTab !== currentTab &&
+      document.getElementById(`panel-${savedTab}`) &&
+      (savedTab !== "check" || document.body.classList.contains("staff-mode"))
+    ) {
+      switchTab(savedTab, {haptic:false});
     }
+
+    setInterval(() => {
+      if (document.visibilityState === "visible") {
+        loadTickets({background:true});
+      }
+    }, 15000);
   })();
 })();
 </script>
