@@ -8,8 +8,7 @@
   <title>ПРОЕКТ «М»</title>
 
   <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
-  <script id="qticketsSdk" defer src="https://cdn.qtickets.tech/openapi.js"></script>
-
+  
   <style>
     :root{
       --paper:#f3f0e7;
@@ -748,7 +747,7 @@
 
         <button id="buyBtn" class="cta" type="button" disabled>ГОТОВИМ ПОКУПКУ...</button>
         <a id="qticketsDynamic"
-           class="qtickets-button cta hidden"
+           class="cta hidden"
            href="https://qtickets.ru/event/251223"
            rel="noopener">КУПИТЬ БИЛЕТ</a>
         <div id="purchaseHint" class="info-text" style="margin-top:8px;text-align:center"></div>
@@ -1223,28 +1222,6 @@
   let purchaseReady = false;
   let purchaseSessionCreatedAt = 0;
 
-  function waitForQTickets(timeoutMs = 8000) {
-    if (window.qTickets?.init) {
-      return Promise.resolve(true);
-    }
-
-    return new Promise((resolve) => {
-      const started = Date.now();
-      const timer = setInterval(() => {
-        if (window.qTickets?.init) {
-          clearInterval(timer);
-          resolve(true);
-          return;
-        }
-
-        if (Date.now() - started >= timeoutMs) {
-          clearInterval(timer);
-          resolve(false);
-        }
-      }, 100);
-    });
-  }
-
   async function preparePurchaseButton({force = false} = {}) {
     if (!initData) return false;
 
@@ -1289,7 +1266,7 @@
         const data = await res.json();
 
         // IMPORTANT:
-        // This is now the REAL element the user taps.
+        // This is the REAL PROJECT M button the user taps.
         // No delayed/synthetic .click() is used anymore.
         qticketsDynamic.href = data.qtickets_url;
         qticketsDynamic.setAttribute(
@@ -1301,25 +1278,12 @@
         purchaseReady = true;
 
         // Show the real link immediately.
-        // If QTickets SDK is slow/unavailable, href itself is a working
-        // fallback and contains a UTM purchase token for account linking.
+        // The href contains the UTM purchase token used for account linking.
         buyBtn.classList.add("hidden");
         qticketsDynamic.classList.remove("hidden");
 
-        const sdkReady = await waitForQTickets();
-
-        if (sdkReady) {
-          try {
-            window.qTickets.init();
-            if (purchaseHint) {
-              purchaseHint.textContent = "";
-            }
-          } catch {
-            // Keep the actual href fallback active.
-          }
-        } else if (purchaseHint) {
-          purchaseHint.textContent =
-            "Покупка откроется на странице QTickets.";
+        if (purchaseHint) {
+          purchaseHint.textContent = "";
         }
 
         return true;
@@ -1350,13 +1314,21 @@
     preparePurchaseButton({force:true});
   });
 
-  qticketsDynamic.addEventListener("click", () => {
+  qticketsDynamic.addEventListener("click", (event) => {
     if (tg?.HapticFeedback?.impactOccurred) {
       try { tg.HapticFeedback.impactOccurred("light"); } catch {}
     }
 
+    const url = qticketsDynamic.href;
+
+    // The prepared URL already exists before the tap.
+    // Opening happens synchronously inside the real user gesture.
+    if (tg?.openLink) {
+      event.preventDefault();
+      tg.openLink(url, {try_instant_view:false});
+    }
+
     // Prepare a fresh token later for a possible second purchase.
-    // The current click already uses the token present on the anchor.
     setTimeout(() => {
       purchaseReady = false;
       preparePurchaseButton({force:true});
