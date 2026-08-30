@@ -468,25 +468,113 @@
       font-size:11px;
     }
 
+    .lineup-intro{
+      margin:0 1px 12px;
+      color:var(--muted);
+      font-size:11px;
+      font-weight:800;
+      letter-spacing:.06em;
+      text-transform:uppercase;
+    }
+
     .lineup-card{
+      position:relative;
+      display:grid;
+      grid-template-columns:42px 1fr auto;
+      align-items:center;
+      gap:11px;
+      min-height:84px;
+      margin-bottom:10px;
+      padding:12px 12px 12px 10px;
+      overflow:hidden;
+      border:1.5px solid var(--ink);
+      border-radius:18px 13px 19px 14px;
+      background:var(--card);
+      box-shadow:3px 3px 0 rgba(17,18,15,.12);
+    }
+
+    .lineup-card::after{
+      content:"";
+      position:absolute;
+      right:-26px;
+      top:-38px;
+      width:92px;
+      height:92px;
+      border:17px solid var(--acid);
+      border-radius:50%;
+      opacity:.52;
+      pointer-events:none;
+    }
+
+    .lineup-card.host{
+      background:var(--acid);
+    }
+
+    .lineup-index{
+      position:relative;
+      z-index:1;
       display:flex;
       align-items:center;
-      justify-content:space-between;
-      gap:12px;
-      margin-bottom:9px;
+      justify-content:center;
+      width:38px;
+      height:52px;
+      border:1.5px solid var(--ink);
+      border-radius:10px 8px 12px 9px;
+      background:var(--paper);
+      font-size:20px;
+      font-weight:950;
+      letter-spacing:-.05em;
+    }
+
+    .lineup-copy{
+      position:relative;
+      z-index:1;
+      min-width:0;
     }
 
     .lineup-name{
-      font-size:25px;
+      margin-top:2px;
+      font-size:27px;
+      line-height:.98;
       font-weight:950;
+      letter-spacing:-.05em;
+      overflow-wrap:anywhere;
     }
 
-    .soon{
-      border:1px solid var(--line);
-      border-radius:999px;
-      padding:6px 8px;
+    .lineup-role{
+      margin-top:5px;
+      color:var(--muted);
       font-size:10px;
-      font-weight:900;
+      font-weight:850;
+      letter-spacing:.08em;
+      text-transform:uppercase;
+    }
+
+    .lineup-badge{
+      position:relative;
+      z-index:1;
+      border:1.5px solid var(--ink);
+      border-radius:999px;
+      padding:7px 9px;
+      background:var(--paper);
+      font-size:10px;
+      font-weight:950;
+      letter-spacing:.04em;
+      white-space:nowrap;
+    }
+
+    .lineup-card.host .lineup-badge{
+      background:var(--ink);
+      color:var(--paper);
+    }
+
+    .lineup-footer{
+      margin-top:13px;
+      padding:11px 12px;
+      border-top:1px dashed var(--line);
+      color:var(--muted);
+      font-size:11px;
+      text-align:center;
     }
 
     .prices{
@@ -810,29 +898,40 @@
 
   <section id="panel-lineup" class="panel">
     <div class="marker section-title">LINE-UP</div>
+    <div class="lineup-intro">05.09 // ПРОЕКТ «М» // LIVE</div>
 
-    <div class="lineup-card">
-      <div>
-        <div class="label">BIRTHDAY UNIT</div>
+    <div class="lineup-card host">
+      <div class="lineup-index">01</div>
+      <div class="lineup-copy">
+        <div class="label">BIRTHDAY / LIVE</div>
         <div class="lineup-name">МИКРОБ</div>
+        <div class="lineup-role">18 YEARS // PROJECT M</div>
       </div>
-      <div class="soon">18</div>
+      <div class="lineup-badge">18</div>
     </div>
 
     <div class="lineup-card">
-      <div>
-        <div class="label">ARTIST</div>
-        <div class="lineup-name">???</div>
+      <div class="lineup-index">02</div>
+      <div class="lineup-copy">
+        <div class="label">ARTIST / LIVE</div>
+        <div class="lineup-name">stayesy</div>
+        <div class="lineup-role">LIVE SET // 05.09</div>
       </div>
-      <div class="soon">SOON</div>
+      <div class="lineup-badge">LIVE</div>
     </div>
 
     <div class="lineup-card">
-      <div>
-        <div class="label">ARTIST</div>
-        <div class="lineup-name">???</div>
+      <div class="lineup-index">03</div>
+      <div class="lineup-copy">
+        <div class="label">ARTIST / LIVE</div>
+        <div class="lineup-name">LIL BRO</div>
+        <div class="lineup-role">LIVE SET // 05.09</div>
       </div>
-      <div class="soon">SOON</div>
+      <div class="lineup-badge">LIVE</div>
+    </div>
+
+    <div class="lineup-footer">
+      КОМПРОМАТ • 05.09 • 18:00
     </div>
   </section>
 
